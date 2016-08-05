@@ -14,45 +14,36 @@ sudo apt-get install isc-dhcp-server
 INTERFACES="eth1"
 
 編輯 /etc/dhcp/dhcpd.conf，設定以下 dhcp 的屬性
-# The ddns-updates-style parameter controls whether or not the server will
-# attempt to do a DNS update when a lease is confirmed. We default to the
-# behavior of the version 2 packages ('none', since DHCP v2 didn't
-# have support for DDNS.)
+#是否使用DDNS
 ddns-update-style none;
-# option definitions common to all supported networks...
-#option domain-name "example.org";
-#option domain-name-servers ns1.example.org, ns2.example.org;
-default-lease-time 86400; #24h
-max-lease-time 172800; #48h
-# If this DHCP server is the official DHCP server for the local
-# network, the authoritative directive should be uncommented.
-#authoritative;
-# Use this to send dhcp log messages to a different log file (you also
-# have to hack syslog.conf to complete the redirection).
+
+#記住發出IP的最短時間，以及最常IP租借時間
+default-lease-time 600;
+max-lease-time 7200;
+
+#系統log(預設)，所以我保留設定
 log-facility local7;
-# No service will be given on this subnet, but declaring it helps the
-# DHCP server to understand the network topology.
 
-#subnet 10.152.187.0 netmask 255.255.255.0 {
-#}
-
-# This is a very basic subnet declaration.
-
-
-subnet 192.168.1.0 netmask 255.255.255.0 {
-  range 192.168.1.2 192.168.1.100;
-  option routers 192.168.1.1;
-  option domain-name-servers 168.95.192.1;
-  option ip-forwarding on;
+#設定192.168.1.0網域以及子網路遮罩，這邊也是給client端資訊
+subnet 192.168.1.0 netmask 255.255.255.0{
+        #發配IP範圍
+        range                           192.168.1.100 192.168.1.200;
+        #子網路遮罩
+        option subnet-mask              255.255.255.0;
+        #廣播位置
+        option broadcast-address        192.168.1.255;
+        #路由器位置，這邊設定要與eth1的IP相同
+        option routers                  192.168.1.1;
+        option domain-name              "opesxidhcp.phy.ncu.edu.tw";
+        #設定DNS位置，不一定要是192.168下的DNS
+        option domain-name-servers      140.115.30.22;
 }
-簡單來說，eth0 將會被設為 192.168.1.1，並當作 router。動態 IP 的範圍是 192.168.1.2 - 100。168.95.192.1 則是中華電信所提供的 DNS。
+簡單來說，eth1 將會被設為 192.168.1.1，並當作 router。動態 IP 的範圍是 192.168.1.100 - 200。168.95.192.1 則是中華電信所提供的 DNS。
 
 接下來，啟動 dhcp server
-
 sudo service isc-dhcp-server start
 
 3. NAT
-
 先要把 ip forwarding 的功能打開。所以我們編輯 /etc/sysctl.conf，並且將 net.ipv4.ip_forward 設成 1。
 # Uncomment the next line to enable packet forwarding for IPv4
 net.ipv4.ip_forward=1
@@ -61,13 +52,10 @@ net.ipv4.ip_forward=1
 #  Enabling this option disables Stateless Address Autoconfiguration
 #  based on Router Advertisements for this host
 #net.ipv6.conf.all.forwarding=1
+
 接下來用 iptables 這個工具來設定 NAT。只需要加一條規則就可以了。
-
 sudo apt-get install iptables
-
-sudo iptables -t nat -A POSTROUTING -o ppp0 -s 192.168.1.0/24 ! -d 192.168.1.0/24 -j SNAT --to-source 122.116.190.207
-
-其中 ppp0 是中華電信的ADSL連線。值得一提的是，我們希望在存取區網時，封包不會遭到修改。所以我們在這一條規則裡，加入了  ! -d 192.168.1.0/24 這部分。
+使用鳥哥提供的設定檔 sh iptables.rule
 
 最後，我們把目前的 iptables 設定備份下來，避免因重開機而需要重新設定。
 sudo iptables-save > /etc/network/iptables.rules
@@ -81,25 +69,32 @@ auto lo
 iface lo inet loopback
 
 # The primary network interface
-auto em1
-iface em1 inet dhcp
+# interfaces(5) file used by ifup(8) and ifdown(8)
+auto lo
+iface lo inet loopback
 
+#eth0具有公開網域的public IP
 auto eth0
 iface eth0 inet static
-    address 192.168.1.1
-    netmask 255.255.255.0
-    network 192.168.1.0
-    broadcast 192.168.1.255
-    pre-up iptables-restore < /etc/network/iptables.rules
+address 192.168.94.238
+netmask 255.255.255.0
+gateway 192.168.94.1
+post-up iptables-restore < /etc/iptables.up.rules
 
-auto dsl-provider
-    iface dsl-provider inet ppp
-    pre-up /sbin/ifconfig em1 up # line maintained by pppoeconf
-    provider dsl-provider
-基本上只需要修改 eth0 的部分。eth0 將被設為固定IP，位址為192.168.1.1，並成為區網的 gateway。此外我們也在 eth0 啟動之時，將備份的 iptables 回存。
+#eth1具有私人網域的虛擬IP 預設gateway
+#注意這邊不用再設定gateway
+auto eth1
+iface eth1 inet static
+address 192.168.1.1
+netmask 255.255.255.0
+
+#ubuntu在12.04後就以這種方式設置DNS
+dns-nameservers 168.95.1.1
+
+基本上只需要修改 eth1 的部分。eth1 將被設為固定IP，位址為192.168.1.1，並成為區網的 gateway。此外我們也在 eth1 啟動之時，將備份的 iptables 回存。
 
 Ubnutu 端的設定，大致上就這樣了。修改網路介面後，最好還是重開機器，避免一些奇奇怪怪的問題。
 
 5. Client 端的設定
 
-基本上，在 Client 端不需任何設定，通通改為自動取得IP即可。但是值得注意的是，在WIN7上必須要先停用網路介面卡再啟用，我們在 Server 端的改動才會生效。WIN7或許對網路設定有一些cache，也讓我卡了好久。
+基本上，在 Client 端不需任何設定，通通改為自動取得IP即可。但是值得注意的是，在WIN7上必須要先停用網路介面卡再啟用，我們在 Server 端的改動才會生效。
